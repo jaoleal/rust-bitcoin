@@ -11,7 +11,6 @@ use core::{fmt, slice};
 
 use hashes::{hash160, hash_newtype, sha512, GeneralHash, HashEngine, Hmac, HmacEngine};
 use internals::{impl_array_newtype, write_err};
-use secp256k1::ecdsa::serialized_signature::IntoIter;
 use secp256k1::{Secp256k1, XOnlyPublicKey};
 
 use crate::crypto::key::{CompressedPublicKey, Keypair, PrivateKey};
@@ -103,7 +102,7 @@ pub struct Xpub {
     /// Fingerprint of the parent key
     pub parent_fingerprint: Fingerprint,
     /// Child number of the key used to derive from parent (0 for master)
-    pub child_number: NormalChildNumber,
+    pub child_number: ChildNumber,
     /// Public key
     pub public_key: secp256k1::PublicKey,
     /// Chain code
@@ -116,67 +115,48 @@ internals::serde_string_impl!(Xpub, "a BIP-32 extended public key");
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
 pub enum ChildNumber {
     /// Non-hardened key
-    /// Key index, within [0, 2^31 - 1]
-    Normal { index: u32 },
+    Normal {
+        /// Key index, within [0, 2^31 - 1]
+        index: u32,
+    },
     /// Hardened key
-    /// Key index, within [0, 2^31 - 1]
-    Hardened { index: u32 },
-}
-
-/// A iterator over the children of a DerivationPath trying to convert them into NormalChildNumber
-pub struct NormalChildIterator<T: TryInto<NormalChildNumber>> {
-    idx: usize,
-    base: DerivationPath,
-    next_child: Option<T>,
-}
-impl Into<NormalChildIterator<NormalChildNumber>> for DerivationPath {
-    fn into(self) -> NormalChildIterator<NormalChildNumber> {
-        NormalChildIterator {
-            idx: 0,
-            base: self.clone(),
-            next_child: {
-                match self[1] {
-                    ChildNumber::Normal { index } => Some(NormalChildNumber(index)),
-                    _ => None,
-                }
-            },
-        }
-    }
-}
-impl Iterator for NormalChildIterator<NormalChildNumber> {
-    type Item = NormalChildNumber;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.next_child {
-            Some(_) => match self.base.0[self.idx + 1].try_into() {
-                Ok(ChildNumber::Normal { index }) => {
-                    self.idx += 1;
-                    Some(NormalChildNumber(index))
-                }
-                _ => None,
-            },
-            None => None,
-        }
-    }
-}
-impl From<ChildNumber> for NormalChildNumber {
-    fn from(child: ChildNumber) -> Self {
-        match child {
-            ChildNumber::Normal { index } => NormalChildNumber(index),
-            _ => panic!("ChildNumber is not a NormalChildNumber"),
-        }
-    }
-}
-impl From<u32> for NormalChildNumber {
-    fn from(index: u32) -> Self { NormalChildNumber(index) }
-}
-impl From<NormalChildNumber> for u32 {
-    fn from(index: NormalChildNumber) -> Self { index.0 }
+    Hardened {
+        /// Key index, within [0, 2^31 - 1]
+        index: u32,
+    },
 }
 
 /// NormalChildNumber is a ChildNumber that is not hardened
+/// made only to be used internally in `derive_pub()` and `NormalChildIterator`
 #[derive(Copy, Clone, PartialEq, Eq, Debug, PartialOrd, Ord, Hash)]
-pub struct NormalChildNumber(u32);
+pub struct NormalChildNumber(pub u32);
+
+/// A iterator over the children of a DerivationPath trying to convert them into NormalChildNumber
+/// made only to be used internally in `derive_pub()`
+pub struct NormalChildIterator {
+    base: Vec<NormalChildNumber>,
+}
+impl Into<NormalChildIterator> for DerivationPath {
+    fn into(self) -> NormalChildIterator {
+        NormalChildIterator {
+            base: self
+                .0
+                .into_iter()
+                .filter_map(|child| {
+                    if let ChildNumber::Normal { index } = child {
+                        Some(NormalChildNumber(index))
+                    } else {
+                        None
+                    }
+                })
+                .collect(),
+        }
+    }
+}
+impl Iterator for NormalChildIterator {
+    type Item = NormalChildNumber;
+    fn next(&mut self) -> Option<Self::Item> { self.base.pop() }
+}
 
 impl ChildNumber {
     /// Normal child number with index 0.
@@ -773,7 +753,7 @@ impl Xpub {
             network: sk.network,
             depth: sk.depth,
             parent_fingerprint: sk.parent_fingerprint,
-            child_number: sk.child_number.into(),
+            child_number: sk.child_number.try_into().unwrap(),
             public_key: secp256k1::PublicKey::from_secret_key(secp, &sk.private_key),
             chain_code: sk.chain_code,
         }
@@ -789,10 +769,10 @@ impl Xpub {
     /// Attempts to derive an extended public key from a path.
     ///
     /// The `path` argument can be any type implementing `AsRef<ChildNumber>`, such as `DerivationPath`, for instance.
-    pub fn derive_pub<C: secp256k1::Verification, P: IntoIterator<Item = NormalChildNumber>>(
+    pub fn derive_pub<C: secp256k1::Verification>(
         &self,
         secp: &Secp256k1<C>,
-        path: P,
+        path: NormalChildIterator,
     ) -> Xpub {
         let mut pk: Xpub = *self;
         for normal_cnum in path.into_iter() {
@@ -823,20 +803,19 @@ impl Xpub {
     }
 
     /// Public->Public child key derivation
-    pub fn internal_derive_pub<C: secp256k1::Verification, I: TryInto<NormalChildNumber>>(
+    pub fn internal_derive_pub<C: secp256k1::Verification>(
         &self,
         secp: &Secp256k1<C>,
-        i: I,
+        number_from: ChildNumber,
     ) -> Result<Xpub, Error> {
-        let num: NormalChildNumber = i.try_into().map_err(|_| Error::InvalidChildNumberFormat)?;
-        let (sk, chain_code) = self.ckd_pub_tweak(num)?;
+        let (sk, chain_code) = self.ckd_pub_tweak(number_from)?;
         let tweaked = self.public_key.add_exp_tweak(secp, &sk.into())?;
 
         Ok(Xpub {
             network: self.network,
             depth: self.depth + 1,
             parent_fingerprint: self.fingerprint(),
-            child_number: num,
+            child_number: number_from,
             public_key: tweaked,
             chain_code,
         })
@@ -845,17 +824,23 @@ impl Xpub {
     /// Compute the scalar tweak added to this key to get a child key
     pub fn ckd_pub_tweak(
         &self,
-        i: NormalChildNumber,
+        i: ChildNumber,
     ) -> Result<(secp256k1::SecretKey, ChainCode), Error> {
-        let mut hmac_engine: HmacEngine<sha512::Hash> = HmacEngine::new(&self.chain_code[..]);
-        hmac_engine.input(&self.public_key.serialize()[..]);
-        hmac_engine.input(&i.0.to_be_bytes());
+        match i {
+            ChildNumber::Hardened { .. } => Err(Error::CannotDeriveFromHardenedKey),
+            ChildNumber::Normal { index: n } => {
+                let mut hmac_engine: HmacEngine<sha512::Hash> =
+                    HmacEngine::new(&self.chain_code[..]);
+                hmac_engine.input(&self.public_key.serialize()[..]);
+                hmac_engine.input(&n.to_be_bytes());
 
-        let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
+                let hmac_result: Hmac<sha512::Hash> = Hmac::from_engine(hmac_engine);
 
-        let private_key = secp256k1::SecretKey::from_slice(&hmac_result.as_ref()[..32])?;
-        let chain_code = ChainCode::from_hmac(hmac_result);
-        Ok((private_key, chain_code))
+                let private_key = secp256k1::SecretKey::from_slice(&hmac_result.as_ref()[..32])?;
+                let chain_code = ChainCode::from_hmac(hmac_result);
+                Ok((private_key, chain_code))
+            }
+        }
     }
 
     /// Decoding extended public key from binary data according to BIP 32
@@ -1079,7 +1064,6 @@ mod tests {
     ) {
         let mut sk = Xpriv::new_master(network, seed).unwrap();
         let mut pk = Xpub::from_priv(secp, &sk);
-
         // Check derivation convenience method for Xpriv
         assert_eq!(&sk.derive_priv(secp, &path).to_string()[..], expected_sk);
 
@@ -1088,7 +1072,7 @@ mod tests {
         if path.0.iter().any(|cnum| cnum.is_hardened()) {
             assert_eq!(pk.try_derive_pub(secp, &path), Err(Error::CannotDeriveFromHardenedKey));
         } else {
-            assert_eq!(&pk.derive_pub(secp, &path).to_string()[..], expected_pk);
+            assert_eq!(&pk.derive_pub(secp, path.clone().into()).to_string()[..], expected_pk);
         }
 
         // Derive keys, checking hardened and non-hardened derivation one-by-one
