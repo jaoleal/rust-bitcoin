@@ -762,15 +762,17 @@ impl GetKey for Xpriv {
             KeyRequest::Pubkey(_) => Err(GetKeyError::NotSupported),
             KeyRequest::Bip32((fingerprint, path)) => {
                 let key = if self.fingerprint(secp) == *fingerprint {
-                    let k = self.derive_xpriv(secp, &path);
+                    let k = self.derive_xpriv(secp, path.clone());
                     Some(k.to_private_key())
+
                 } else if self.parent_fingerprint == *fingerprint
                     && !path.is_empty()
-                    && path[0] == self.child_number
+                    && path[0] == self.child_index
                 {
-                    let path = DerivationPath::from_iter(path.into_iter().skip(1).copied());
+                    let path = DerivationPath::from_iter(path.into_iter().skip(1));
                     let k = self.derive_xpriv(secp, &path);
                     Some(k.to_private_key())
+
                 } else {
                     None
                 };
@@ -988,8 +990,9 @@ impl fmt::Display for SignError {
             TaprootError(ref e) => write_err!(f, "Taproot sighash"; e),
             UnknownOutputType => write!(f, "unable to determine the output type"),
             KeyNotFound => write!(f, "unable to find key"),
-            WrongSigningAlgorithm =>
-                write!(f, "attempt to sign an input with the wrong signing algorithm"),
+            WrongSigningAlgorithm => {
+                write!(f, "attempt to sign an input with the wrong signing algorithm")
+            }
             Unsupported => write!(f, "signing request currently unsupported"),
         }
     }
@@ -1063,8 +1066,9 @@ impl fmt::Display for ExtractTxError {
         use ExtractTxError::*;
 
         match *self {
-            AbsurdFeeRate { fee_rate, .. } =>
-                write!(f, "an absurdly high fee rate of {}", fee_rate),
+            AbsurdFeeRate { fee_rate, .. } => {
+                write!(f, "an absurdly high fee rate of {}", fee_rate)
+            }
             MissingInputValue { .. } => write!(
                 f,
                 "one of the inputs lacked value information (witness_utxo or non_witness_utxo)"
@@ -1213,7 +1217,7 @@ mod tests {
 
     use super::*;
     use crate::address::script_pubkey::ScriptExt as _;
-    use crate::bip32::ChildNumber;
+    use crate::bip32::ChildKeyIndex;
     use crate::locktime::absolute;
     use crate::network::NetworkKind;
     use crate::psbt::serialize::{Deserialize, Serialize};
@@ -1358,18 +1362,18 @@ mod tests {
 
         let fprint = sk.fingerprint(secp);
 
-        let dpath: Vec<ChildNumber> = vec![
-            ChildNumber::ZERO_NORMAL,
-            ChildNumber::ONE_NORMAL,
-            ChildNumber::from_normal_idx(2).unwrap(),
-            ChildNumber::from_normal_idx(4).unwrap(),
-            ChildNumber::from_normal_idx(42).unwrap(),
-            ChildNumber::from_hardened_idx(69).unwrap(),
-            ChildNumber::from_normal_idx(420).unwrap(),
-            ChildNumber::from_normal_idx(31337).unwrap(),
+        let dpath: Vec<ChildKeyIndex> = vec![
+            ChildKeyIndex::ZERO_NORMAL,
+            ChildKeyIndex::ONE_NORMAL,
+            ChildKeyIndex::from_normal_index(2).unwrap(),
+            ChildKeyIndex::from_normal_index(4).unwrap(),
+            ChildKeyIndex::from_normal_index(42).unwrap(),
+            ChildKeyIndex::from_hardened_index(69).unwrap(),
+            ChildKeyIndex::from_normal_index(420).unwrap(),
+            ChildKeyIndex::from_normal_index(31337).unwrap(),
         ];
 
-        sk = sk.derive_xpriv(secp, &dpath);
+        sk = sk.derive_xpriv(secp, dpath.clone());
 
         let pk = Xpub::from_xpriv(secp, &sk);
 
@@ -2278,7 +2282,7 @@ mod tests {
         psbt.inputs[0].witness_utxo = Some(txout_wpkh);
 
         let mut map = BTreeMap::new();
-        map.insert(pk.inner, (Fingerprint::default(), DerivationPath::default()));
+        map.insert(pk.inner, (Fingerprint::default(), DerivationPath::MASTER));
         psbt.inputs[0].bip32_derivation = map;
 
         // Second input is unspendable by us e.g., from another wallet that supports future upgrades.
