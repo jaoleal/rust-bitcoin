@@ -10,7 +10,7 @@ use internals::compact_size;
 use secp256k1::XOnlyPublicKey;
 
 use super::map::{Input, Map, Output, PsbtSighashType};
-use crate::bip32::{ChildNumber, Fingerprint, KeySource};
+use crate::bip32::{ChildKeyIndex, Fingerprint, KeySource};
 use crate::consensus::encode::{self, deserialize_partial, serialize, Decodable, Encodable};
 use crate::crypto::key::PublicKey;
 use crate::crypto::{ecdsa, taproot};
@@ -204,8 +204,8 @@ impl Serialize for KeySource {
 
         rv.append(&mut self.0.to_byte_array().to_vec());
 
-        for cnum in self.1.into_iter() {
-            rv.append(&mut serialize(&u32::from(*cnum)))
+        for cnum in (&self.1).into_iter() {
+            rv.append(&mut serialize(&u32::from(cnum)))
         }
 
         rv
@@ -219,7 +219,7 @@ impl Deserialize for KeySource {
         }
 
         let fprint: Fingerprint = bytes[0..4].try_into().expect("4 is the fingerprint length");
-        let mut dpath: Vec<ChildNumber> = Default::default();
+        let mut dpath: Vec<ChildKeyIndex> = Default::default();
 
         let mut d = &bytes[4..];
         while !d.is_empty() {
@@ -396,7 +396,7 @@ impl Deserialize for TapTree {
 }
 
 // Helper function to compute key source len
-fn key_source_len(key_source: &KeySource) -> usize { 4 + 4 * (key_source.1).as_ref().len() }
+fn key_source_len(key_source: &KeySource) -> usize { 4 + 4 * (key_source.1).len() }
 
 #[cfg(test)]
 mod tests {
