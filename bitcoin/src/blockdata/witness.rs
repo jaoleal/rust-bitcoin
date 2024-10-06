@@ -185,7 +185,8 @@ impl Decodable for Witness {
                 encode_cursor(&mut content, 0, i, cursor - witness_index_space);
 
                 resize_if_needed(&mut content, required_len);
-                cursor += (&mut content[cursor..cursor + element_size_len]).emit_compact_size(element_size)?;
+                cursor += (&mut content[cursor..cursor + element_size_len])
+                    .emit_compact_size(element_size)?;
                 r.read_exact(&mut content[cursor..cursor + element_size])?;
                 cursor += element_size;
             }
@@ -233,7 +234,8 @@ impl Encodable for Witness {
         let content_with_indices_len = self.content.len();
         let indices_size = self.witness_elements * 4;
         let content_len = content_with_indices_len - indices_size;
-        Ok(w.emit_compact_size(self.witness_elements)? + w.emit_slice(&self.content[..content_len])?)
+        Ok(w.emit_compact_size(self.witness_elements)?
+            + w.emit_slice(&self.content[..content_len])?)
     }
 }
 
@@ -626,7 +628,7 @@ mod test {
     use hex::test_hex_unwrap as hex;
 
     use super::*;
-    use crate::consensus::{encode, deserialize, serialize};
+    use crate::consensus::{deserialize, encode, serialize};
     use crate::hex::DisplayHex;
     use crate::sighash::EcdsaSighashType;
     use crate::Transaction;
@@ -646,11 +648,7 @@ mod test {
         // The last four bytes represent start at index 0.
         let content = [0_u8; 5];
 
-        Witness {
-            witness_elements: 1,
-            content: content.to_vec(),
-            indices_start: 1,
-        }
+        Witness { witness_elements: 1, content: content.to_vec(), indices_start: 1 }
     }
 
     #[test]
@@ -957,7 +955,6 @@ mod test {
         let ser = serde_json::to_string(&original).unwrap();
         let rinsed: Witness = serde_json::from_str(&ser).unwrap();
         assert_eq!(rinsed, original);
-
     }
 
     #[test]
